@@ -1,0 +1,1523 @@
+-- Khang hub v2.1 | Delta X (UNC / sUNC)
+-- DarkwenV1
+
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local SoundService = game:GetService("SoundService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
+
+local LocalPlayer = Players.LocalPlayer
+
+local APP_NAME = "Khang hub"
+local APP_VERSION = "v2.1"
+local GUI_NAME = "KhangHubUI"
+local LEGACY_GUI_NAMES = { "KhangMusicUI" }
+local BASE = "KhangMusic"
+local AUDIO_DIR = BASE .. "/audio"
+local THUMB_DIR = BASE .. "/thumbs"
+local INDEX_PATH = BASE .. "/index.json"
+local SETTINGS_PATH = BASE .. "/settings.json"
+
+local AUDIO_API_URL = "https://api.samplecut.app/v1/downloads"
+local INVIDIOUS_INSTANCES = {
+	"https://inv.nadeko.net",
+	"https://invidious.nerdvpn.de",
+	"https://yt.chocolatemoo53.com",
+	"https://invidious.tiekoetter.com",
+}
+local THUMB_URL = "https://i.ytimg.com/vi/%s/mqdefault.jpg"
+local THUMB_WORKERS = 4
+local DRAG_THRESHOLD = 6
+
+local httpRequest = request or http_request or (syn and syn.request)
+
+local REQUIRED = {
+	writefile = writefile,
+	readfile = readfile,
+	isfile = isfile,
+	makefolder = makefolder,
+	getcustomasset = getcustomasset,
+	request = httpRequest,
+}
+
+local missingFns = {}
+for name, fn in pairs(REQUIRED) do
+	if typeof(fn) ~= "function" then
+		table.insert(missingFns, name)
+	end
+end
+table.sort(missingFns)
+local canRun = #missingFns == 0
+local missingText = table.concat(missingFns, ", ")
+
+local THEMES = {
+	{ name = "Hồng", accent = Color3.fromRGB(255, 62, 96) },
+	{ name = "Xanh dương", accent = Color3.fromRGB(56, 132, 255) },
+	{ name = "Tím", accent = Color3.fromRGB(150, 90, 255) },
+	{ name = "Xanh lục", accent = Color3.fromRGB(40, 210, 130) },
+	{ name = "Cam", accent = Color3.fromRGB(255, 140, 50) },
+	{ name = "Vàng", accent = Color3.fromRGB(250, 200, 60) },
+	{ name = "Ngọc", accent = Color3.fromRGB(30, 200, 220) },
+}
+
+local COLOR = {
+	bg = Color3.fromRGB(14, 14, 20),
+	header = Color3.fromRGB(22, 22, 32),
+	panel = Color3.fromRGB(26, 26, 38),
+	row = Color3.fromRGB(30, 30, 44),
+	btn = Color3.fromRGB(40, 40, 56),
+	border = Color3.fromRGB(62, 62, 84),
+	text = Color3.fromRGB(240, 240, 248),
+	subtext = Color3.fromRGB(150, 150, 170),
+	ok = Color3.fromRGB(120, 230, 160),
+	err = Color3.fromRGB(255, 110, 120),
+	white = Color3.fromRGB(255, 255, 255),
+}
+
+local ERR_TEXT = {
+	unsupported_url = "Link không được hỗ trợ.",
+	invalid_range = "Khoảng thời gian không hợp lệ.",
+	set_not_track = "Đây là playlist hoặc album, cần link video đơn.",
+	too_long = "Video dài hơn 60 phút.",
+	extract_failed = "Video riêng tư, đã xóa, giới hạn độ tuổi hoặc bị chặn vùng.",
+	api_disabled = "API đang tạm tắt.",
+	source_unreachable = "YouTube không phản hồi, thử lại sau.",
+	search_failed = "Không lấy được kết quả từ các instance Invidious. Thử lại sau hoặc đổi instance trong INVIDIOUS_INSTANCES.",
+}
+
+-- Helpers
+
+local function darken(color, factor)
+	return Color3.new(color.R * factor, color.G * factor, color.B * factor)
+end
+
+local function addCorner(parent, radius)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, radius)
+	corner.Parent = parent
+	return corner
+end
+
+local function addStroke(parent, color, thickness, transparency)
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = color
+	stroke.Thickness = thickness or 1
+	stroke.Transparency = transparency or 0
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	stroke.Parent = parent
+	return stroke
+end
+
+local function makeButton(parent, text, size, position, color, radius)
+	local button = Instance.new("TextButton")
+	button.Size = size
+	button.Position = position
+	button.BackgroundColor3 = color
+	button.BorderSizePixel = 0
+	button.Text = text
+	button.TextColor3 = COLOR.text
+	button.Font = Enum.Font.GothamBold
+	button.TextSize = 13
+	button.AutoButtonColor = true
+	button.Parent = parent
+	addCorner(button, radius or 8)
+	return button
+end
+
+local function makeLabel(parent, props)
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.BorderSizePixel = 0
+	label.Font = props.Font or Enum.Font.Gotham
+	label.TextSize = props.TextSize or 13
+	label.TextColor3 = props.TextColor3 or COLOR.text
+	label.Text = props.Text or ""
+	label.Position = props.Position or UDim2.new(0, 0, 0, 0)
+	label.Size = props.Size or UDim2.new(1, 0, 0, 20)
+	label.TextXAlignment = props.TextXAlignment or Enum.TextXAlignment.Left
+	label.TextWrapped = props.TextWrapped or false
+	label.Parent = parent
+	return label
+end
+
+local function makeDraggable(handle, target, bag, onTap)
+	local dragging = false
+	local moved = false
+	local dragStart = nil
+	local startPos = nil
+
+	table.insert(bag, handle.InputBegan:Connect(function(inp)
+		if inp.UserInputType ~= Enum.UserInputType.MouseButton1
+			and inp.UserInputType ~= Enum.UserInputType.Touch then
+			return
+		end
+		dragging = true
+		moved = false
+		dragStart = inp.Position
+		startPos = target.Position
+
+		local endConn
+		endConn = inp.Changed:Connect(function()
+			if inp.UserInputState == Enum.UserInputState.End then
+				endConn:Disconnect()
+				dragging = false
+				if not moved and onTap then
+					onTap()
+				end
+			end
+		end)
+	end))
+
+	table.insert(bag, UserInputService.InputChanged:Connect(function(inp)
+		if not dragging then
+			return
+		end
+		if inp.UserInputType ~= Enum.UserInputType.MouseMovement
+			and inp.UserInputType ~= Enum.UserInputType.Touch then
+			return
+		end
+		local delta = inp.Position - dragStart
+		if not moved and delta.Magnitude < DRAG_THRESHOLD then
+			return
+		end
+		moved = true
+		target.Position = UDim2.new(
+			startPos.X.Scale,
+			startPos.X.Offset + delta.X,
+			startPos.Y.Scale,
+			startPos.Y.Offset + delta.Y
+		)
+	end))
+end
+
+local function getHeader(headers, name)
+	if type(headers) ~= "table" then
+		return nil
+	end
+	local target = name:lower()
+	for key, value in pairs(headers) do
+		if tostring(key):lower() == target then
+			return value
+		end
+	end
+	return nil
+end
+
+local function percentDecode(text)
+	text = text:gsub("%+", " ")
+	return (text:gsub("%%(%x%x)", function(hex)
+		return string.char(tonumber(hex, 16))
+	end))
+end
+
+local function percentEncode(text)
+	local encoded = text:gsub("[^%w%-_%.~ ]", function(c)
+		return string.format("%%%02X", string.byte(c))
+	end)
+	return (encoded:gsub(" ", "+"))
+end
+
+local ENTITIES = { amp = "&", lt = "<", gt = ">", quot = '"', apos = "'", nbsp = " " }
+
+local function decodeEntities(text)
+	text = text:gsub("&#(%d+);", function(n)
+		local ok, ch = pcall(utf8.char, tonumber(n))
+		return ok and ch or ""
+	end)
+	text = text:gsub("&#x(%x+);", function(h)
+		local ok, ch = pcall(utf8.char, tonumber(h, 16))
+		return ok and ch or ""
+	end)
+	text = text:gsub("&(%a+);", function(name)
+		return ENTITIES[name] or ("&" .. name .. ";")
+	end)
+	return text
+end
+
+local function formatDuration(seconds)
+	seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+	local h = math.floor(seconds / 3600)
+	local m = math.floor((seconds % 3600) / 60)
+	local s = seconds % 60
+	if h > 0 then
+		return ("%d:%02d:%02d"):format(h, m, s)
+	end
+	return ("%d:%02d"):format(m, s)
+end
+
+local function extractId(url)
+	if type(url) ~= "string" then
+		return nil
+	end
+	local id = url:match("[?&]v=([%w_%-]+)")
+		or url:match("youtu%.be/([%w_%-]+)")
+		or url:match("youtube%.com/shorts/([%w_%-]+)")
+		or url:match("youtube%.com/embed/([%w_%-]+)")
+		or url:match("youtube%.com/live/([%w_%-]+)")
+	if id and #id >= 6 then
+		return id
+	end
+	return nil
+end
+
+local function ensureFolders()
+	for _, path in ipairs({ BASE, AUDIO_DIR, THUMB_DIR }) do
+		pcall(makefolder, path)
+	end
+end
+
+local function loadIndex()
+	if not isfile(INDEX_PATH) then
+		return {}
+	end
+	local ok, data = pcall(function()
+		return HttpService:JSONDecode(readfile(INDEX_PATH))
+	end)
+	local list = {}
+	if not ok or type(data) ~= "table" then
+		return list
+	end
+	for _, entry in ipairs(data) do
+		if type(entry) == "table"
+			and type(entry.id) == "string"
+			and type(entry.audio) == "string"
+			and isfile(entry.audio)
+		then
+			local thumb = ""
+			if type(entry.thumb) == "string" and entry.thumb ~= "" and isfile(entry.thumb) then
+				thumb = entry.thumb
+			end
+			table.insert(list, {
+				id = entry.id,
+				title = type(entry.title) == "string" and entry.title or entry.id,
+				audio = entry.audio,
+				thumb = thumb,
+			})
+		end
+	end
+	return list
+end
+
+local function saveIndex(list)
+	pcall(writefile, INDEX_PATH, HttpService:JSONEncode(list))
+end
+
+local function loadSettings()
+	if not isfile(SETTINGS_PATH) then
+		return {}
+	end
+	local ok, data = pcall(function()
+		return HttpService:JSONDecode(readfile(SETTINGS_PATH))
+	end)
+	if ok and type(data) == "table" then
+		return data
+	end
+	return {}
+end
+
+local function saveSettings(theme)
+	pcall(writefile, SETTINGS_PATH, HttpService:JSONEncode({ theme = theme }))
+end
+
+local assetCache = {}
+
+local function assetOf(path)
+	if type(path) ~= "string" or path == "" then
+		return ""
+	end
+	if assetCache[path] then
+		return assetCache[path]
+	end
+	if not isfile(path) then
+		return ""
+	end
+	local ok, asset = pcall(getcustomasset, path)
+	if ok and asset then
+		assetCache[path] = asset
+		return asset
+	end
+	return ""
+end
+
+-- Tìm kiếm qua Invidious: thử lần lượt các instance, nhớ instance chạy được gần nhất
+
+local preferredInstance = nil
+
+local function invidiousSearch(query, page)
+	local order = {}
+	if preferredInstance then
+		table.insert(order, preferredInstance)
+	end
+	for _, base in ipairs(INVIDIOUS_INSTANCES) do
+		if base ~= preferredInstance then
+			table.insert(order, base)
+		end
+	end
+
+	for _, base in ipairs(order) do
+		local url = base .. "/api/v1/search?type=video&q=" .. percentEncode(query) .. "&page=" .. tostring(page)
+		local ok, res = pcall(httpRequest, {
+			Url = url,
+			Method = "GET",
+			Headers = { ["Accept"] = "application/json" },
+		})
+
+		if ok and type(res) == "table" and res.StatusCode == 200 and type(res.Body) == "string" then
+			local okJson, data = pcall(function()
+				return HttpService:JSONDecode(res.Body)
+			end)
+			if okJson and type(data) == "table" and data.error == nil then
+				preferredInstance = base
+
+				local results = {}
+				for _, item in ipairs(data) do
+					if type(item) == "table" and item.type == "video" and type(item.videoId) == "string" then
+						table.insert(results, {
+							id = item.videoId,
+							title = decodeEntities(tostring(item.title or item.videoId)),
+							channel = decodeEntities(tostring(item.author or "")),
+							duration = tonumber(item.lengthSeconds) or 0,
+						})
+					end
+				end
+				return true, results, #data > 0
+			end
+		end
+	end
+
+	return false, ERR_TEXT.search_failed
+end
+
+-- Tải audio qua dịch vụ đang dùng
+
+local function fetchAudio(videoId)
+	local payload = HttpService:JSONEncode({
+		url = "https://www.youtube.com/watch?v=" .. videoId,
+		format = "mp3",
+		response = "file",
+	})
+
+	local attempt = 0
+	while attempt < 3 do
+		attempt += 1
+
+		local ok, res = pcall(httpRequest, {
+			Url = AUDIO_API_URL,
+			Method = "POST",
+			Headers = {
+				["Content-Type"] = "application/json",
+				["X-Client-Name"] = APP_NAME,
+			},
+			Body = payload,
+		})
+
+		if not ok or type(res) ~= "table" then
+			return false, "Không kết nối được API. Kiểm tra mạng rồi thử lại."
+		end
+
+		if res.StatusCode == 200 and type(res.Body) == "string" and #res.Body > 0 then
+			local rawTitle = getHeader(res.Headers, "X-Samplecut-Title")
+			local title = nil
+			if type(rawTitle) == "string" and rawTitle ~= "" then
+				title = percentDecode(rawTitle)
+			end
+			return true, res.Body, title
+		end
+
+		if res.StatusCode == 429 then
+			local wait = tonumber(getHeader(res.Headers, "Retry-After")) or 60
+			return false, ("Hết lượt gọi API. Thử lại sau %d giây."):format(wait)
+		end
+
+		local message = "Lỗi HTTP " .. tostring(res.StatusCode)
+		local okJson, decoded = pcall(HttpService.JSONDecode, HttpService, res.Body or "")
+		if okJson and type(decoded) == "table" and type(decoded.error) == "table" then
+			local code = decoded.error.code
+			message = ERR_TEXT[code] or decoded.error.message or message
+		end
+
+		if res.StatusCode == 502 and attempt < 3 then
+			task.wait(attempt * 2)
+		else
+			return false, message
+		end
+	end
+
+	return false, "Hết số lần thử lại."
+end
+
+-- Tải thumbnail, bỏ qua nếu file đã có trong cache
+
+local function fetchThumb(videoId)
+	local path = THUMB_DIR .. "/" .. videoId .. ".jpg"
+	if isfile(path) then
+		return path
+	end
+	local ok, res = pcall(httpRequest, {
+		Url = THUMB_URL:format(videoId),
+		Method = "GET",
+	})
+	if not ok or type(res) ~= "table" or res.StatusCode ~= 200 then
+		return nil
+	end
+	if type(res.Body) ~= "string" or #res.Body == 0 then
+		return nil
+	end
+	if pcall(writefile, path, res.Body) then
+		return path
+	end
+	return nil
+end
+
+-- GUI gốc: tạo và gắn ngay, không phụ thuộc vào bước nào phía sau
+
+local function clearOldGui()
+	local containers = {}
+	if typeof(gethui) == "function" then
+		local ok, hui = pcall(gethui)
+		if ok and typeof(hui) == "Instance" then
+			table.insert(containers, hui)
+		end
+	end
+	table.insert(containers, CoreGui)
+	local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+	if playerGui then
+		table.insert(containers, playerGui)
+	end
+	for _, container in ipairs(containers) do
+		pcall(function()
+			for _, child in ipairs(container:GetChildren()) do
+				if child.Name == GUI_NAME or table.find(LEGACY_GUI_NAMES, child.Name) then
+					child:Destroy()
+				end
+			end
+		end)
+	end
+end
+
+clearOldGui()
+
+local gui = Instance.new("ScreenGui")
+gui.Name = GUI_NAME
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.DisplayOrder = 9999
+
+local function attachGui()
+	local candidates = {}
+	if typeof(gethui) == "function" then
+		local ok, hui = pcall(gethui)
+		if ok and typeof(hui) == "Instance" then
+			table.insert(candidates, hui)
+		end
+	end
+	table.insert(candidates, CoreGui)
+	local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui", 5)
+	if playerGui then
+		table.insert(candidates, playerGui)
+	end
+
+	for _, parent in ipairs(candidates) do
+		local ok = pcall(function()
+			gui.Parent = parent
+		end)
+		if ok and gui.Parent == parent then
+			return true
+		end
+	end
+	return false
+end
+
+local attached = attachGui()
+
+-- Khung báo lỗi: hiện ngay trên GUI nếu có lỗi khi dựng giao diện
+
+local crashFrame = Instance.new("Frame")
+crashFrame.Name = "CrashPanel"
+crashFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+crashFrame.Position = UDim2.fromScale(0.5, 0.5)
+crashFrame.Size = UDim2.fromOffset(380, 180)
+crashFrame.BackgroundColor3 = COLOR.header
+crashFrame.BorderSizePixel = 0
+crashFrame.Visible = false
+crashFrame.ZIndex = 100
+crashFrame.Parent = gui
+addCorner(crashFrame, 14)
+addStroke(crashFrame, COLOR.err, 1, 0.2)
+
+local crashTitle = makeLabel(crashFrame, {
+	Text = "KHANG HUB GẶP LỖI",
+	Font = Enum.Font.GothamBold,
+	TextSize = 14,
+	TextColor3 = COLOR.err,
+	Position = UDim2.new(0, 16, 0, 14),
+	Size = UDim2.new(1, -32, 0, 20),
+})
+crashTitle.ZIndex = 101
+
+local crashText = makeLabel(crashFrame, {
+	Text = "",
+	Font = Enum.Font.Code,
+	TextSize = 12,
+	TextColor3 = COLOR.text,
+	TextWrapped = true,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Position = UDim2.new(0, 16, 0, 42),
+	Size = UDim2.new(1, -32, 1, -58),
+})
+crashText.TextYAlignment = Enum.TextYAlignment.Top
+crashText.ZIndex = 101
+
+local function showCrash(message)
+	crashText.Text = tostring(message)
+	crashFrame.Visible = true
+	warn("[Khang hub] " .. tostring(message))
+end
+
+if not attached then
+	showCrash("Không gắn được GUI vào màn hình executor. Executor có thể đang chặn ScreenGui.")
+end
+
+-- Giao diện chính và logic
+
+local function boot()
+	local closed = false
+	local busy = false
+	local busyId = nil
+	local searching = false
+	local searchSeq = 0
+	local searchResults = {}
+	local nextPage = nil
+	local currentQuery = ""
+	local currentMode = "search"
+	local currentSound = nil
+	local currentId = nil
+	local library = {}
+	local currentTheme = 1
+	local isOpen = true
+	local connections = {}
+	local themed = {}
+	local themeDots = {}
+	local tabButtons = {}
+	local thumbPaths = {}
+	local thumbPending = {}
+	local thumbSlots = {}
+	local thumbQueue = {}
+	local thumbRunning = 0
+	local closeConn = nil
+
+	local refreshList
+	local playItem
+	local pumpThumbs
+	local setMode
+	local runSearch
+	local downloadAndPlay
+	local deleteItem
+
+	local function track(obj, prop, role)
+		table.insert(themed, { obj = obj, prop = prop, role = role })
+		return obj
+	end
+
+	local function findLibraryItem(id)
+		for _, item in ipairs(library) do
+			if item.id == id then
+				return item
+			end
+		end
+		return nil
+	end
+
+	-- Cửa sổ chính
+
+	local main = Instance.new("Frame")
+	main.Name = "Main"
+	main.AnchorPoint = Vector2.new(0.5, 0.5)
+	main.Position = UDim2.fromScale(0.5, 0.5)
+	main.Size = UDim2.new(0.9, 0, 0.85, 0)
+	main.BackgroundColor3 = COLOR.bg
+	main.BorderSizePixel = 0
+	main.ClipsDescendants = true
+	main.Parent = gui
+	addCorner(main, 16)
+	track(addStroke(main, COLOR.border, 1, 0.2), "Color", "accent")
+
+	local mainScale = Instance.new("UIScale")
+	mainScale.Parent = main
+
+	local sizeLimit = Instance.new("UISizeConstraint")
+	sizeLimit.MaxSize = Vector2.new(460, 600)
+	sizeLimit.MinSize = Vector2.new(290, 360)
+	sizeLimit.Parent = main
+
+	-- Header
+
+	local header = Instance.new("Frame")
+	header.Name = "Header"
+	header.Active = true
+	header.Size = UDim2.new(1, 0, 0, 56)
+	header.BackgroundColor3 = COLOR.white
+	header.BorderSizePixel = 0
+	header.Parent = main
+
+	local headerGrad = Instance.new("UIGradient")
+	headerGrad.Parent = header
+	track(headerGrad, "Color", "grad")
+
+	makeLabel(header, {
+		Text = APP_NAME .. "  " .. APP_VERSION,
+		Font = Enum.Font.GothamBold,
+		TextSize = 17,
+		Position = UDim2.new(0, 16, 0, 9),
+		Size = UDim2.new(1, -120, 0, 24),
+	})
+
+	makeLabel(header, {
+		Text = "Tìm nhạc YouTube · sang MP3 · Delta X",
+		Font = Enum.Font.Gotham,
+		TextSize = 11,
+		TextColor3 = COLOR.subtext,
+		Position = UDim2.new(0, 16, 0, 31),
+		Size = UDim2.new(1, -120, 0, 16),
+	})
+
+	local minBtn = makeButton(header, "-", UDim2.fromOffset(32, 32), UDim2.new(1, -76, 0.5, -16), COLOR.btn, 16)
+	local closeBtn = makeButton(header, "X", UDim2.fromOffset(32, 32), UDim2.new(1, -38, 0.5, -16), COLOR.btn, 16)
+	closeBtn.TextColor3 = COLOR.err
+
+	local accentBar = Instance.new("Frame")
+	accentBar.Name = "AccentBar"
+	accentBar.Size = UDim2.new(1, 0, 0, 2)
+	accentBar.Position = UDim2.new(0, 0, 1, -2)
+	accentBar.BorderSizePixel = 0
+	accentBar.Parent = header
+	track(accentBar, "BackgroundColor3", "accent")
+
+	-- Body
+
+	local body = Instance.new("Frame")
+	body.Name = "Body"
+	body.Position = UDim2.new(0, 0, 0, 56)
+	body.Size = UDim2.new(1, 0, 1, -56)
+	body.BackgroundTransparency = 1
+	body.Parent = main
+
+	-- Ô nhập: từ khóa hoặc link
+	local urlInput = Instance.new("TextBox")
+	urlInput.Name = "SearchInput"
+	urlInput.Position = UDim2.new(0, 14, 0, 14)
+	urlInput.Size = UDim2.new(1, -134, 0, 42)
+	urlInput.BackgroundColor3 = COLOR.panel
+	urlInput.BorderSizePixel = 0
+	urlInput.ClearTextOnFocus = false
+	urlInput.Text = ""
+	urlInput.PlaceholderText = "Nhập từ khóa hoặc dán link YouTube..."
+	urlInput.PlaceholderColor3 = COLOR.subtext
+	urlInput.TextColor3 = COLOR.text
+	urlInput.Font = Enum.Font.Gotham
+	urlInput.TextSize = 14
+	urlInput.TextXAlignment = Enum.TextXAlignment.Left
+	urlInput.ClipsDescendants = true
+	urlInput.Parent = body
+	addCorner(urlInput, 12)
+	local urlStroke = addStroke(urlInput, COLOR.border, 1, 0.4)
+
+	local inputPad = Instance.new("UIPadding")
+	inputPad.PaddingLeft = UDim.new(0, 12)
+	inputPad.PaddingRight = UDim.new(0, 12)
+	inputPad.Parent = urlInput
+
+	local actionBtn = makeButton(body, "TÌM", UDim2.fromOffset(112, 42), UDim2.new(1, -14, 0, 14), COLOR.white, 12)
+	actionBtn.AnchorPoint = Vector2.new(1, 0)
+	actionBtn.Name = "ActionButton"
+	actionBtn.TextSize = 14
+	track(actionBtn, "BackgroundColor3", "accent")
+
+	-- Tab chuyển chế độ
+
+	local tabSearch = makeButton(body, "TÌM KIẾM", UDim2.new(0.5, -18, 0, 30), UDim2.new(0, 14, 0, 66), COLOR.btn, 10)
+	tabSearch.TextSize = 12
+	tabSearch.Name = "TabSearch"
+
+	local tabSaved = makeButton(body, "ĐÃ LƯU", UDim2.new(0.5, -18, 0, 30), UDim2.new(0.5, 4, 0, 66), COLOR.btn, 10)
+	tabSaved.TextSize = 12
+	tabSaved.Name = "TabSaved"
+
+	tabButtons.search = tabSearch
+	tabButtons.saved = tabSaved
+
+	-- Trạng thái và tiêu đề danh sách
+
+	local statusLabel = makeLabel(body, {
+		Text = "",
+		TextColor3 = COLOR.subtext,
+		TextWrapped = true,
+		Position = UDim2.new(0, 14, 0, 104),
+		Size = UDim2.new(1, -28, 0, 30),
+	})
+
+	local sectionLabel = makeLabel(body, {
+		Text = "",
+		Font = Enum.Font.GothamBold,
+		TextSize = 11,
+		TextColor3 = COLOR.subtext,
+		Position = UDim2.new(0, 14, 0, 140),
+		Size = UDim2.new(0.6, 0, 0, 18),
+	})
+
+	local countLabel = makeLabel(body, {
+		Text = "",
+		Font = Enum.Font.GothamBold,
+		TextSize = 11,
+		TextColor3 = COLOR.subtext,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		Position = UDim2.new(0.4, 0, 0, 140),
+		Size = UDim2.new(0.6, -14, 0, 18),
+	})
+
+	local listFrame = Instance.new("ScrollingFrame")
+	listFrame.Name = "ResultList"
+	listFrame.Position = UDim2.new(0, 14, 0, 162)
+	listFrame.Size = UDim2.new(1, -28, 1, -202)
+	listFrame.BackgroundTransparency = 1
+	listFrame.BorderSizePixel = 0
+	listFrame.ScrollBarThickness = 3
+	listFrame.ScrollBarImageColor3 = COLOR.white
+	listFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+	listFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	listFrame.Parent = body
+	track(listFrame, "ScrollBarImageColor3", "accent")
+
+	local listLayout = Instance.new("UIListLayout")
+	listLayout.Padding = UDim.new(0, 8)
+	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	listLayout.Parent = listFrame
+
+	-- Hàng chọn giao diện (đáy)
+
+	local themeRow = Instance.new("Frame")
+	themeRow.Name = "ThemeRow"
+	themeRow.Position = UDim2.new(0, 14, 1, -30)
+	themeRow.Size = UDim2.new(1, -28, 0, 22)
+	themeRow.BackgroundTransparency = 1
+	themeRow.Parent = body
+
+	local themeTitle = makeLabel(themeRow, {
+		Text = "",
+		Font = Enum.Font.GothamBold,
+		TextSize = 11,
+		TextColor3 = COLOR.subtext,
+		Size = UDim2.new(1, -220, 1, 0),
+	})
+
+	local dotHolder = Instance.new("Frame")
+	dotHolder.Name = "Dots"
+	dotHolder.AnchorPoint = Vector2.new(1, 0.5)
+	dotHolder.Position = UDim2.new(1, 0, 0.5, 0)
+	dotHolder.Size = UDim2.fromOffset(7 * 20 + 6 * 10, 22)
+	dotHolder.BackgroundTransparency = 1
+	dotHolder.Parent = themeRow
+
+	local dotLayout = Instance.new("UIListLayout")
+	dotLayout.FillDirection = Enum.FillDirection.Horizontal
+	dotLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	dotLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	dotLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	dotLayout.Padding = UDim.new(0, 10)
+	dotLayout.Parent = dotHolder
+
+	for index, theme in ipairs(THEMES) do
+		local dotBtn = Instance.new("TextButton")
+		dotBtn.Name = theme.name
+		dotBtn.Text = ""
+		dotBtn.AutoButtonColor = false
+		dotBtn.Size = UDim2.fromOffset(20, 20)
+		dotBtn.BackgroundColor3 = theme.accent
+		dotBtn.BorderSizePixel = 0
+		dotBtn.LayoutOrder = index
+		dotBtn.Parent = dotHolder
+		addCorner(dotBtn, 10)
+		local ring = addStroke(dotBtn, COLOR.white, 2, 1)
+		themeDots[index] = { button = dotBtn, ring = ring }
+	end
+
+	-- Bubble tròn khi thu gọn
+
+	local bubble = Instance.new("TextButton")
+	bubble.Name = "Bubble"
+	bubble.AnchorPoint = Vector2.new(1, 0.5)
+	bubble.Position = UDim2.new(1, -14, 0.5, 0)
+	bubble.Size = UDim2.fromOffset(52, 52)
+	bubble.BackgroundColor3 = THEMES[1].accent
+	bubble.BorderSizePixel = 0
+	bubble.Text = "K"
+	bubble.TextColor3 = COLOR.white
+	bubble.Font = Enum.Font.GothamBold
+	bubble.TextSize = 20
+	bubble.AutoButtonColor = false
+	bubble.Visible = false
+	bubble.Parent = gui
+	addCorner(bubble, 26)
+	addStroke(bubble, COLOR.white, 2, 0.4)
+	track(bubble, "BackgroundColor3", "accent")
+
+	local bubbleScale = Instance.new("UIScale")
+	bubbleScale.Parent = bubble
+
+	-- Hàm dùng chung
+
+	local function setStatus(text, color)
+		statusLabel.Text = text
+		statusLabel.TextColor3 = color or COLOR.subtext
+	end
+
+	local function stopPlayback()
+		if currentSound then
+			currentSound:Stop()
+			currentSound:Destroy()
+			currentSound = nil
+		end
+		currentId = nil
+	end
+
+	local function applyTabStyles()
+		local accent = THEMES[currentTheme].accent
+		for mode, btn in pairs(tabButtons) do
+			local active = currentMode == mode
+			btn.BackgroundColor3 = active and accent or COLOR.btn
+			btn.TextColor3 = active and COLOR.white or COLOR.subtext
+		end
+	end
+
+	-- Thumbnail: cache theo id, tải song song có giới hạn luồng
+
+	local function onThumbReady(id, path)
+		thumbPaths[id] = path
+		for _, entry in ipairs(library) do
+			if entry.id == id and entry.thumb == "" then
+				entry.thumb = path
+				saveIndex(library)
+			end
+		end
+		local slots = thumbSlots[id]
+		thumbSlots[id] = nil
+		if slots then
+			local asset = assetOf(path)
+			for _, label in ipairs(slots) do
+				if label.Parent then
+					label.Image = asset
+				end
+			end
+		end
+	end
+
+	local function runThumbJob(job)
+		local ok, path = pcall(fetchThumb, job.id)
+		thumbPending[job.id] = nil
+		if ok and path and not closed then
+			pcall(onThumbReady, job.id, path)
+		end
+		thumbRunning = thumbRunning - 1
+		pumpThumbs()
+	end
+
+	function pumpThumbs()
+		if closed then
+			return
+		end
+		while thumbRunning < THUMB_WORKERS and #thumbQueue > 0 do
+			local job = table.remove(thumbQueue, 1)
+			thumbRunning = thumbRunning + 1
+			task.spawn(runThumbJob, job)
+		end
+	end
+
+	local function requestThumb(id)
+		if closed or thumbPaths[id] or thumbPending[id] then
+			return
+		end
+		thumbPending[id] = true
+		table.insert(thumbQueue, { id = id })
+		pumpThumbs()
+	end
+
+	local function setThumbSlot(id, label)
+		local path = thumbPaths[id]
+		if path then
+			label.Image = assetOf(path)
+			return
+		end
+		thumbSlots[id] = thumbSlots[id] or {}
+		table.insert(thumbSlots[id], label)
+		requestThumb(id)
+	end
+
+	-- Danh sách
+
+	function refreshList()
+		if closed then
+			return
+		end
+		thumbSlots = {}
+		for _, child in ipairs(listFrame:GetChildren()) do
+			if child:IsA("GuiObject") then
+				child:Destroy()
+			end
+		end
+
+		local accent = THEMES[currentTheme].accent
+		local isSearch = currentMode == "search"
+		local rows = isSearch and searchResults or library
+
+		sectionLabel.Text = isSearch and "KẾT QUẢ TÌM KIẾM" or "NHẠC ĐÃ LƯU"
+		countLabel.Text = isSearch and (#searchResults .. " kết quả") or (#library .. " bài")
+
+		if #rows == 0 then
+			local hint = makeLabel(listFrame, {
+				Text = isSearch and "Nhập từ khóa rồi bấm TÌM." or "Chưa có bài nào được lưu.",
+				TextColor3 = COLOR.subtext,
+				TextXAlignment = Enum.TextXAlignment.Center,
+				Size = UDim2.new(1, 0, 0, 40),
+			})
+			hint.LayoutOrder = 1
+		end
+
+		for index, entry in ipairs(rows) do
+			local inLibrary = findLibraryItem(entry.id)
+			local isActive = currentId == entry.id
+			local isLoading = busyId == entry.id
+
+			local subtitle
+			if isSearch then
+				local channel = entry.channel ~= "" and entry.channel or "YouTube"
+				subtitle = channel .. " · " .. formatDuration(entry.duration)
+				if inLibrary then
+					subtitle = subtitle .. " · Đã lưu"
+				end
+			else
+				subtitle = isActive and "Đang phát" or "Đã lưu"
+			end
+
+			local row = Instance.new("Frame")
+			row.Name = entry.id
+			row.LayoutOrder = index
+			row.Size = UDim2.new(1, -6, 0, 68)
+			row.BackgroundColor3 = isActive and darken(accent, 0.35) or COLOR.row
+			row.BorderSizePixel = 0
+			row.Parent = listFrame
+			addCorner(row, 12)
+			addStroke(row, isActive and accent or COLOR.border, 1, isActive and 0 or 0.6)
+
+			local thumb = Instance.new("ImageLabel")
+			thumb.Size = UDim2.fromOffset(78, 46)
+			thumb.Position = UDim2.new(0, 10, 0.5, -23)
+			thumb.BackgroundColor3 = COLOR.panel
+			thumb.BorderSizePixel = 0
+			thumb.ScaleType = Enum.ScaleType.Crop
+			thumb.Parent = row
+			addCorner(thumb, 8)
+			setThumbSlot(entry.id, thumb)
+
+			local titleLabel = makeLabel(row, {
+				Text = entry.title,
+				Font = Enum.Font.GothamSemibold,
+				TextSize = 13,
+				Position = UDim2.new(0, 98, 0, 12),
+				Size = UDim2.new(1, -216, 0, 20),
+			})
+			titleLabel.TextTruncate = Enum.TextTruncate.AtEnd
+
+			local subLabel = makeLabel(row, {
+				Text = subtitle,
+				Font = Enum.Font.Gotham,
+				TextSize = 11,
+				TextColor3 = isActive and accent or COLOR.subtext,
+				Position = UDim2.new(0, 98, 0, 36),
+				Size = UDim2.new(1, -216, 0, 16),
+			})
+			subLabel.TextTruncate = Enum.TextTruncate.AtEnd
+
+			if isSearch then
+				local btnText, btnColor
+				if isLoading then
+					btnText = "ĐANG TẢI"
+					btnColor = COLOR.btn
+				elseif inLibrary then
+					btnText = isActive and "DỪNG" or "PHÁT"
+					btnColor = isActive and COLOR.btn or accent
+				else
+					btnText = "TẢI"
+					btnColor = accent
+				end
+
+				local actBtn = makeButton(row, btnText, UDim2.fromOffset(78, 30), UDim2.new(1, -92, 0.5, -15), btnColor, 8)
+				actBtn.TextSize = 12
+				actBtn.MouseButton1Click:Connect(function()
+					if closed or isLoading then
+						return
+					end
+					if inLibrary then
+						if currentId == inLibrary.id then
+							stopPlayback()
+							setStatus("Đã dừng.")
+							refreshList()
+						else
+							playItem(inLibrary)
+						end
+					else
+						downloadAndPlay(entry.id, entry.title)
+					end
+				end)
+			else
+				local playBtn = makeButton(
+					row,
+					isActive and "DỪNG" or "PHÁT",
+					UDim2.fromOffset(62, 30),
+					UDim2.new(1, -112, 0.5, -15),
+					isActive and COLOR.btn or accent,
+					8
+				)
+				playBtn.TextSize = 12
+				playBtn.MouseButton1Click:Connect(function()
+					if closed then
+						return
+					end
+					if currentId == entry.id then
+						stopPlayback()
+						setStatus("Đã dừng.")
+						refreshList()
+					else
+						playItem(entry)
+					end
+				end)
+
+				local delBtn = makeButton(row, "XÓA", UDim2.fromOffset(42, 30), UDim2.new(1, -44, 0.5, -15), COLOR.btn, 8)
+				delBtn.TextColor3 = COLOR.err
+				delBtn.TextSize = 12
+				delBtn.MouseButton1Click:Connect(function()
+					if not closed then
+						deleteItem(entry)
+					end
+				end)
+			end
+		end
+
+		if isSearch and nextPage and #searchResults > 0 then
+			local moreBtn = makeButton(listFrame, "TẢI THÊM KẾT QUẢ", UDim2.new(1, -6, 0, 36), UDim2.new(), COLOR.btn, 10)
+			moreBtn.LayoutOrder = #searchResults + 1
+			moreBtn.TextColor3 = accent
+			moreBtn.TextSize = 12
+			moreBtn.MouseButton1Click:Connect(function()
+				if not searching and not closed then
+					runSearch(currentQuery, true)
+				end
+			end)
+		end
+	end
+
+	-- Phát nhạc
+
+	function playItem(item)
+		if closed then
+			return
+		end
+		stopPlayback()
+
+		local asset = assetOf(item.audio)
+		if asset == "" then
+			setStatus("Không đọc được file audio: " .. item.title, COLOR.err)
+			refreshList()
+			return
+		end
+
+		local sound = Instance.new("Sound")
+		sound.Name = "KhangHubPlayer"
+		sound.SoundId = asset
+		sound.Volume = 1
+		sound.Parent = SoundService
+
+		sound.Ended:Connect(function()
+			if currentSound == sound then
+				stopPlayback()
+				setStatus("Phát xong: " .. item.title, COLOR.ok)
+				refreshList()
+			end
+		end)
+
+		currentSound = sound
+		currentId = item.id
+		sound:Play()
+
+		setStatus("Đang phát: " .. item.title, COLOR.ok)
+		refreshList()
+	end
+
+	function deleteItem(item)
+		if currentId == item.id then
+			stopPlayback()
+		end
+
+		for index, entry in ipairs(library) do
+			if entry.id == item.id then
+				table.remove(library, index)
+				break
+			end
+		end
+
+		if typeof(delfile) == "function" then
+			pcall(delfile, item.audio)
+			if item.thumb ~= "" then
+				pcall(delfile, item.thumb)
+			end
+		end
+
+		assetCache[item.audio] = nil
+		if item.thumb ~= "" then
+			assetCache[item.thumb] = nil
+		end
+		thumbPaths[item.id] = nil
+
+		saveIndex(library)
+		setStatus("Đã xóa: " .. item.title)
+		refreshList()
+	end
+
+	-- Tải audio rồi phát ngay
+
+	function downloadAndPlay(videoId, fallbackTitle)
+		if closed then
+			return
+		end
+
+		local existing = findLibraryItem(videoId)
+		if existing then
+			playItem(existing)
+			return
+		end
+
+		if not canRun then
+			setStatus("Thiếu hàm executor: " .. missingText, COLOR.err)
+			return
+		end
+		if busy then
+			setStatus("Đang tải một bài khác, đợi xong đã.", COLOR.err)
+			return
+		end
+
+		busy = true
+		busyId = videoId
+		setStatus("Đang tải âm thanh, có thể mất vài chục giây...")
+		refreshList()
+
+		task.spawn(function()
+			local ok, body, apiTitle = fetchAudio(videoId)
+			busy = false
+			busyId = nil
+
+			if closed then
+				return
+			end
+			if not ok then
+				setStatus(body, COLOR.err)
+				refreshList()
+				return
+			end
+
+			local audioPath = AUDIO_DIR .. "/" .. videoId .. ".mp3"
+			if not pcall(writefile, audioPath, body) then
+				setStatus("Không ghi được file audio vào thư mục executor.", COLOR.err)
+				refreshList()
+				return
+			end
+
+			local item = {
+				id = videoId,
+				title = apiTitle or fallbackTitle or ("YouTube " .. videoId),
+				audio = audioPath,
+				thumb = thumbPaths[videoId] or "",
+			}
+			table.insert(library, 1, item)
+			saveIndex(library)
+			playItem(item)
+			requestThumb(videoId)
+		end)
+	end
+
+	-- Tìm kiếm YouTube qua Invidious
+
+	function runSearch(query, append)
+		if closed then
+			return
+		end
+		if not canRun then
+			setStatus("Thiếu hàm executor: " .. missingText, COLOR.err)
+			return
+		end
+		if searching then
+			return
+		end
+
+		searchSeq = searchSeq + 1
+		local seq = searchSeq
+		searching = true
+
+		local page = 1
+		if append then
+			page = nextPage or 1
+			setStatus("Đang tải thêm kết quả...")
+		else
+			searchResults = {}
+			nextPage = nil
+			currentQuery = query
+			setStatus("Đang tìm \"" .. query .. "\"...")
+		end
+		refreshList()
+
+		task.spawn(function()
+			local ok, result, hasMore = invidiousSearch(query, page)
+			if closed or seq ~= searchSeq then
+				return
+			end
+			searching = false
+
+			if not ok then
+				setStatus(result, COLOR.err)
+				refreshList()
+				return
+			end
+
+			local seen = {}
+			for _, entry in ipairs(searchResults) do
+				seen[entry.id] = true
+			end
+			for _, entry in ipairs(result) do
+				if not seen[entry.id] then
+					seen[entry.id] = true
+					table.insert(searchResults, entry)
+				end
+			end
+			nextPage = hasMore and (page + 1) or nil
+
+			if #searchResults == 0 then
+				setStatus("Không có video nào cho \"" .. currentQuery .. "\".")
+			else
+				setStatus("Tìm thấy " .. #searchResults .. " video cho \"" .. currentQuery .. "\".", COLOR.ok)
+			end
+			refreshList()
+		end)
+	end
+
+	function setMode(mode)
+		currentMode = mode
+		applyTabStyles()
+		refreshList()
+	end
+
+	local function handleSubmit()
+		if closed then
+			return
+		end
+		local text = urlInput.Text
+		local videoId = extractId(text)
+		if videoId then
+			downloadAndPlay(videoId, nil)
+			return
+		end
+
+		local query = text:match("^%s*(.-)%s*$") or ""
+		if query == "" then
+			setStatus("Nhập từ khóa hoặc dán link YouTube.", COLOR.err)
+			return
+		end
+		setMode("search")
+		runSearch(query, false)
+	end
+
+	-- Giao diện
+
+	local function applyTheme(index, animate)
+		currentTheme = index
+		local accent = THEMES[index].accent
+		local info = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+		for i = #themed, 1, -1 do
+			local entry = themed[i]
+			if entry.obj:IsDescendantOf(gui) then
+				if entry.role == "grad" then
+					entry.obj.Color = ColorSequence.new(darken(accent, 0.55), COLOR.header)
+				elseif animate then
+					TweenService:Create(entry.obj, info, { [entry.prop] = accent }):Play()
+				else
+					entry.obj[entry.prop] = accent
+				end
+			else
+				table.remove(themed, i)
+			end
+		end
+
+		urlStroke.Color = COLOR.border
+		for i, entry in ipairs(themeDots) do
+			entry.ring.Transparency = i == index and 0 or 1
+		end
+
+		themeTitle.Text = "GIAO DIỆN · " .. THEMES[index].name:upper()
+		applyTabStyles()
+		refreshList()
+	end
+
+	local OPEN_INFO = TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+	local CLOSE_INFO = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+
+	local function setOpen(open)
+		if open == isOpen then
+			return
+		end
+		isOpen = open
+
+		if open then
+			if closeConn then
+				closeConn:Disconnect()
+				closeConn = nil
+			end
+			bubble.Visible = false
+			main.Visible = true
+			mainScale.Scale = 0.6
+			TweenService:Create(mainScale, OPEN_INFO, { Scale = 1 }):Play()
+		else
+			if closeConn then
+				closeConn:Disconnect()
+			end
+			local tween = TweenService:Create(mainScale, CLOSE_INFO, { Scale = 0.6 })
+			closeConn = tween.Completed:Connect(function(state)
+				closeConn = nil
+				if not isOpen and state == Enum.PlaybackState.Completed then
+					main.Visible = false
+					mainScale.Scale = 1
+					bubble.Visible = true
+					bubbleScale.Scale = 0.4
+					TweenService:Create(bubbleScale, OPEN_INFO, { Scale = 1 }):Play()
+				end
+			end)
+			tween:Play()
+		end
+	end
+
+	local function destroyApp()
+		if closed then
+			return
+		end
+		closed = true
+		stopPlayback()
+		if closeConn then
+			closeConn:Disconnect()
+			closeConn = nil
+		end
+		for _, conn in ipairs(connections) do
+			conn:Disconnect()
+		end
+		gui:Destroy()
+	end
+
+	-- Sự kiện
+
+	actionBtn.MouseButton1Click:Connect(handleSubmit)
+
+	table.insert(connections, urlInput:GetPropertyChangedSignal("Text"):Connect(function()
+		actionBtn.Text = extractId(urlInput.Text) and "TẢI & PHÁT" or "TÌM"
+	end))
+
+	urlInput.Focused:Connect(function()
+		urlStroke.Color = THEMES[currentTheme].accent
+		urlStroke.Transparency = 0
+	end)
+
+	urlInput.FocusLost:Connect(function(enterPressed)
+		urlStroke.Color = COLOR.border
+		urlStroke.Transparency = 0.4
+		if enterPressed then
+			handleSubmit()
+		end
+	end)
+
+	tabSearch.MouseButton1Click:Connect(function()
+		if currentMode ~= "search" then
+			setMode("search")
+		end
+	end)
+
+	tabSaved.MouseButton1Click:Connect(function()
+		if currentMode ~= "saved" then
+			setMode("saved")
+		end
+	end)
+
+	for index, entry in ipairs(themeDots) do
+		entry.button.MouseButton1Click:Connect(function()
+			if index ~= currentTheme then
+				applyTheme(index, true)
+				saveSettings(index)
+			end
+		end)
+	end
+
+	minBtn.MouseButton1Click:Connect(function()
+		setOpen(false)
+	end)
+
+	closeBtn.MouseButton1Click:Connect(destroyApp)
+
+	table.insert(connections, UserInputService.InputBegan:Connect(function(inp, processed)
+		if processed then
+			return
+		end
+		if inp.KeyCode == Enum.KeyCode.RightControl then
+			setOpen(not isOpen)
+		end
+	end))
+
+	makeDraggable(header, main, connections)
+	makeDraggable(bubble, bubble, connections, function()
+		setOpen(true)
+	end)
+
+	-- Khởi tạo: GUI hiện trước, dữ liệu nạp sau một nhịp
+
+	applyTheme(currentTheme, false)
+	applyTabStyles()
+	setStatus("Đang khởi tạo...")
+
+	task.defer(function()
+		if closed then
+			return
+		end
+
+		if canRun then
+			ensureFolders()
+			library = loadIndex()
+			for _, item in ipairs(library) do
+				if item.thumb ~= "" then
+					thumbPaths[item.id] = item.thumb
+				end
+			end
+			local settings = loadSettings()
+			if type(settings.theme) == "number" and THEMES[settings.theme] then
+				currentTheme = settings.theme
+			end
+		end
+
+		applyTheme(currentTheme, false)
+
+		if not canRun then
+			setStatus("Thiếu hàm executor: " .. missingText, COLOR.err)
+		else
+			setStatus("Sẵn sàng. Nhập từ khóa hoặc dán link YouTube.", COLOR.ok)
+		end
+	end)
+end
+
+local okBoot, bootErr = xpcall(boot, debug.traceback)
+if not okBoot then
+	showCrash(bootErr)
+end
